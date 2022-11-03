@@ -11,7 +11,7 @@ for j := 0; j < 2; j++ {
 	p.AddWorker(j)
 }
 p.Run(func(worker int, task int) bool {
-	fmt.Println("TestReplace ", task, "worker=", worker, time.Now().Unix())
+	fmt.Println("Test task=", task, "worker=", worker, time.Now().Unix())
 	time.Sleep(time.Second * 1) 
 	return false
 })
