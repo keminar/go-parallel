@@ -4,6 +4,7 @@
 # 使用
 ```
 p := NewParallelPool(10, 2)
+defer p.Close()
 for i := 0; i < 10; i++ {
 	p.AddTask(i)
 }
