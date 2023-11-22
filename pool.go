@@ -1,6 +1,7 @@
 package parallel
 
 import (
+	"fmt"
 	"log"
 	"runtime"
 	"sync"
@@ -14,6 +15,7 @@ type parallelPool struct {
 	workers     *workerMap
 	workerQueue chan int
 	sleep       time.Duration
+	logPrint    func(v ...interface{})
 }
 
 func NewParallelPool(taskNum int, workerNum int) *parallelPool {
@@ -24,6 +26,7 @@ func NewParallelPool(taskNum int, workerNum int) *parallelPool {
 		workers:     newWorkerMap(),
 		workerQueue: make(chan int, workerNum),
 		sleep:       0,
+		logPrint:    log.Println,
 	}
 	p.wg.Add(taskNum)
 	return p
@@ -43,13 +46,18 @@ func (p *parallelPool) AddTask(task int) {
 func (p *parallelPool) AddWorker(worker int) {
 	p.workers.Lock()
 	defer p.workers.Unlock()
+
+	defer func() {
+		// 捕获异常
+		if err := recover(); err != nil {
+			const size = 64 << 10
+			buf := make([]byte, size)
+			buf = buf[:runtime.Stack(buf, false)]
+			p.logPrint(fmt.Sprintf("panic2: %v\n%s", err, buf))
+		}
+	}()
+
 	if _, ok := p.workers.data[worker]; !ok {
-		defer func() {
-			// 捕获异常
-			if err := recover(); err != nil {
-				log.Printf("panic: %v", err)
-			}
-		}()
 		p.workers.data[worker] = struct{}{}
 		// 一个工人只有一条生命, 不可对同一个工人多次加队列增加权重，否则会导致队列长度不够写入卡住
 		// 队列值要和map没有一一对应的另一个坏处是还会导致并发工作比工人数多，且在替换工人时并发数量又降低
@@ -72,7 +80,7 @@ func (p *parallelPool) ReplaceWorker(last, newer int) bool {
 		defer func() {
 			// 捕获异常
 			if err := recover(); err != nil {
-				log.Printf("panic: %v", err)
+				p.logPrint(fmt.Sprintf("panic: %v", err))
 			} else {
 				delete(p.workers.data, last)
 			}
@@ -89,11 +97,26 @@ func (p *parallelPool) setWorker(worker int) {
 	p.workers.Lock()
 	defer p.workers.Unlock()
 
+	defer func() {
+		// 捕获异常
+		if err := recover(); err != nil {
+			const size = 64 << 10
+			buf := make([]byte, size)
+			buf = buf[:runtime.Stack(buf, false)]
+			p.logPrint(fmt.Sprintf("panic2: %v\n%s", err, buf))
+		}
+	}()
+
 	// 只要当前工人还在，说明没有进行过替换掉此工人，则需要加回
 	// 如果工人不在说明通过ReplaceWorker加了新的工人，这边不需要再操作
 	if _, ok := p.workers.data[worker]; ok {
 		p.workerQueue <- worker
 	}
+}
+
+// 设置日志输出
+func (p *parallelPool) SetLogger(name func(v ...interface{})) {
+	p.logPrint = name
 }
 
 // 传输，并执行回调
@@ -106,13 +129,12 @@ func (p *parallelPool) Run(fn func(worker int, task int) bool) {
 			t := <-p.taskQueue
 
 			defer func() {
-				p.wg.Done()
 				// 捕获异常 防止waitGroup阻塞
 				if err := recover(); err != nil {
 					const size = 64 << 10
 					buf := make([]byte, size)
 					buf = buf[:runtime.Stack(buf, false)]
-					log.Printf("panic: %v\n%s", err, buf)
+					p.logPrint(fmt.Sprintf("panic: %v\n%s", err, buf))
 				}
 
 				// 将下面的代码放在defer是为了防止fn出现panic时工人没有被放回，导致没工人卡住
@@ -126,6 +148,8 @@ func (p *parallelPool) Run(fn func(worker int, task int) bool) {
 				if p.sleep > 0 {
 					time.Sleep(p.sleep)
 				}
+				// 放在最末尾，保证在setWorker前chan不被close
+				p.wg.Done()
 			}()
 
 			// 当节点有变更时在fn函数可能会更新worker
